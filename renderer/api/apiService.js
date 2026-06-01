@@ -79,6 +79,84 @@ export function floorplanToInstance(planJson, units) {
     entryPoint: p.entryPoint ?? false,
   }));
 
+  // ── structural components (for reuse when skipping structural stage) ──────
+  const rawColumns = Array.isArray(planJson.Columns) ? planJson.Columns : [];
+  const columns = rawColumns
+    .map((c) => {
+      if (c && typeof c.x === 'number' && typeof c.y === 'number') {
+        return { x: toMm(c.x), y: toMm(c.y) };
+      }
+      if (Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
+        return { x: toMm(c[0]), y: toMm(c[1]) };
+      }
+      if (c && typeof c === 'object') {
+        const polyPts = Object.keys(c)
+          .filter(k => /^Pt_\d+$/.test(k))
+          .sort((a, b) => parseInt(a.slice(3), 10) - parseInt(b.slice(3), 10))
+          .map(k => c[k])
+          .filter(v => Array.isArray(v) && Number.isFinite(v[0]) && Number.isFinite(v[1]));
+        if (polyPts.length > 0) {
+          const cx = polyPts.reduce((s, p) => s + p[0], 0) / polyPts.length;
+          const cy = polyPts.reduce((s, p) => s + p[1], 0) / polyPts.length;
+          return { x: toMm(cx), y: toMm(cy) };
+        }
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  const rawBeams = Array.isArray(planJson.Beams) ? planJson.Beams : [];
+  const beams = rawBeams
+    .map((b) => {
+      if (b?.start && b?.end) {
+        return {
+          start: { x: toMm(b.start.x), y: toMm(b.start.y) },
+          end: { x: toMm(b.end.x), y: toMm(b.end.y) },
+        };
+      }
+      if (b && typeof b === 'object' && Array.isArray(b.Pt_0) && Array.isArray(b.Pt_1)) {
+        return {
+          start: { x: toMm(b.Pt_0[0]), y: toMm(b.Pt_0[1]) },
+          end: { x: toMm(b.Pt_1[0]), y: toMm(b.Pt_1[1]) },
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (columns.length || beams.length) {
+    instance.structural_components = {
+      ...(instance.structural_components || {}),
+      units: { length: 'mm' },
+      columns,
+      beams,
+    };
+  }
+
+  // ── thermal zones (for reuse when skipping segmentation/zones stage) ──────
+  const rawThermalZones = Array.isArray(planJson.thermal_zones) ? planJson.thermal_zones : [];
+  if (rawThermalZones.length) {
+    instance.thermal_zones = rawThermalZones.map(zone => ({
+      ...zone,
+      // Accept both backend keys and frontend aliases.
+      thermal_region_geometry: ((zone.thermal_region_geometry || zone.subZones) || []).map(sub =>
+        (sub || [])
+          .map(pt => {
+            if (!pt) return null;
+            if (Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+              return { x: pt.x, y: pt.y };
+            }
+            if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) {
+              return { x: pt[0], y: pt[1] };
+            }
+            return null;
+          })
+          .filter(Boolean)
+      ),
+      vav_control_zones: zone.vav_control_zones || zone.thermalControlZones || [],
+    }));
+  }
+
   // ── exclusion areas ───────────────────────────────────────────────────────
   // v2 toJSON() outputs 'exclusion_areas' (snake_case); fall back to PascalCase for legacy plans.
   const rawExclusionAreas = planJson.exclusion_areas ?? planJson.Exclusion_Areas;
@@ -230,7 +308,8 @@ export async function pollOptimisation(jobId, onUpdate, interval = 2000, signal 
         timeoutHandle = setTimeout(tick, interval);
       }
     };
-    setTimeout(tick, interval);
+    // Poll once immediately so partial results are surfaced without initial delay.
+    tick();
   });
 }
 
