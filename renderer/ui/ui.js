@@ -2013,8 +2013,26 @@ export function bindUI(store, canvas, mouse) {
         }
 
         if (shouldRunThermal) {
-          const thermalResult = await runStage(['segmentation', 'zones']);
-          if (!thermalResult.ok) return;
+          // Stage 2a: region segmentation only.
+          const segResult = await runStage(['segmentation']);
+          if (!segResult.ok) return;
+
+          const continueToZones = await waitForContinue(
+            'continue to zone partitioning',
+            'Thermal regions are segmented. Review/edit the regions, then click Continue to partition them into thermal zones.'
+          );
+          if (!continueToZones) {
+            if (aiError) {
+              aiError.style.display = 'block';
+              aiError.style.color = '#e6a817';
+              aiError.textContent = 'Optimisation paused after region segmentation for manual region edits.';
+            }
+            return;
+          }
+
+          // Stage 2b: zone partitioning of the segmented regions.
+          const zoneResult = await runStage(['zones']);
+          if (!zoneResult.ok) return;
 
           const continueToDuct = await waitForContinue(
             'continue to duct routing',
