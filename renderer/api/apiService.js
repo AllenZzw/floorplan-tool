@@ -22,7 +22,7 @@ const API_BASE = 'http://127.0.0.1:5001';
  * BuildWeave instance shape (minimum required):
  * {
  *   "boundary": [ { "start": [x, y, 0], "end": [x, y, 0], "open": true }, ... ],
- *   "core":     [ { "Pt_0": [x, y, 0], "Pt_1": ..., ... }, ... ]   // optional
+ *   "cores":     [ { "Pt_0": [x, y, 0], "Pt_1": ..., ... }, ... ]   // optional
  * }
  *
  * Coordinates must be in millimetres.
@@ -54,19 +54,24 @@ export function floorplanToInstance(planJson, units) {
     })),
   };
 
-  // ── core (schema 2.0.0) ──────────────────────────────────────────────────────
-  const rawCore = planJson.core ?? {};
-  // BuildWeave expects core as a list of polygons, each { edges: [...] }
-  instance.core = rawCore.edges?.length
-    ? [{
-        edges: (rawCore.edges).map(e => ({
-          id: e.id,
-          start:      { x: toMm(e.start.x), y: toMm(e.start.y) },
-          end:        { x: toMm(e.end.x),   y: toMm(e.end.y) },
-          translucent: e.translucent ?? false,
-        })),
-      }]
-    : [];
+  // ── cores (schema 2.1.0) ─────────────────────────────────────────────────────
+  // toJSON() now emits `cores` as an array of { closed, edges } objects (one per
+  // disconnected core). Fall back to the legacy single-object { edges } shape.
+  const rawCores = Array.isArray(planJson.cores)
+    ? planJson.cores
+    : (planJson.cores?.edges?.length ? [planJson.cores] : []);
+  // BuildWeave expects cores as a list of polygons, each { edges: [...] }
+  instance.cores = rawCores
+    .filter(core => core?.edges?.length)
+    .map(core => ({
+      closed: core.closed ?? true,
+      edges: core.edges.map(e => ({
+        id: e.id,
+        start:      { x: toMm(e.start.x), y: toMm(e.start.y) },
+        end:        { x: toMm(e.end.x),   y: toMm(e.end.y) },
+        translucent: e.translucent ?? false,
+      })),
+    }));
 
   // ── grid_points (schema 2.0.0) ──────────────────────────────────────────────
   // Pass through to server; server builds points/edges/discretizedSize from these.
@@ -84,7 +89,11 @@ export function floorplanToInstance(planJson, units) {
   const columns = rawColumns
     .map((c) => {
       if (c && typeof c.x === 'number' && typeof c.y === 'number') {
-        return { x: toMm(c.x), y: toMm(c.y) };
+        // Preserve the column footprint width (used by duct routing to keep
+        // ducts out of columns). It shares the plan unit, like x/y.
+        const col = { x: toMm(c.x), y: toMm(c.y) };
+        if (Number.isFinite(c.width)) col.width = toMm(c.width);
+        return col;
       }
       if (Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
         return { x: toMm(c[0]), y: toMm(c[1]) };
